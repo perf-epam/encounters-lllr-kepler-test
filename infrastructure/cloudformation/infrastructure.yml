@@ -1,0 +1,341 @@
+Description: An uber stack for PoC deployment of encounters-mdi-kepler-test project
+
+#Tags:
+#  Name: encounters-mdi-kepler-test
+#  Product: HealtheCare
+#  Environment: Development
+#  EPAMDevelopmentTeam: Deadpool
+
+Parameters:
+  ResourcePrefix:
+    Description: Prefix for resources
+    Type: String
+
+  GithubRepo:
+    Description: Github repository
+    Type: String
+    Default: https://github-partners.cerner.com/VG084800/encounters-mdi-kepler-test.git
+
+  GithubBranch:
+    Description: Github branch
+    Type: String
+    Default: master
+
+  #SecretsManagerGithubTokenSecretName:
+  #  Description: Path to GithubEnterprise secret in SecretsManager
+  #  Type: String
+  #  Default: hec-epam/deadpool/dev/github-partners/codebuild/token
+
+  SecretsManagerHadoopOauthPath:
+    Description: Path to OAuth secret
+    Type: String
+    Default: hec-epam/deadpool/dev/hadoop-ecosystem/oauth
+
+  VpcId:
+    Description: The identifier of the VPC for the environment
+    Type: AWS::EC2::VPC::Id
+
+  VpcSubnets:
+    Description: List of subnets for the VPC
+    Type: List<AWS::EC2::Subnet::Id>
+
+  MdiSQSKey:
+    Description: set key for encrypt sqs
+    Type: String
+    Default: 792d89d8-1a41-4248-bdcd-035e146836c0
+
+Resources:
+  CodeBuildServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${ResourcePrefix}-codebuild
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - codebuild.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub arn:aws:iam::${AWS::AccountId}:policy/CTSIAMBlacklistPolicy
+      Policies:
+        - PolicyName: codebuild
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource:
+                  - !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/${ResourcePrefix}-build
+                  - !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/${ResourcePrefix}-build:log-stream:*
+              - Effect: Allow
+                Action:
+                  - ec2:CreateNetworkInterface
+                  - ec2:DescribeDhcpOptions
+                  - ec2:DescribeNetworkInterfaces
+                  - ec2:DeleteNetworkInterface
+                  - ec2:DescribeSubnets
+                  - ec2:DescribeSecurityGroups
+                  - ec2:DescribeVpcs
+                Resource:
+                  - '*'
+              - Effect: Allow
+                Action:
+                  - ec2:CreateNetworkInterfacePermission
+                  - ec2:DeleteNetworkInterfacePermission
+                Resource:
+                  - !Sub arn:aws:ec2:${AWS::Region}:${AWS::AccountId}:network-interface/*
+              - Effect: Allow
+                Action:
+                  - cloudformation:ValidateTemplate
+                Resource:
+                  - '*'
+              - Effect: Allow
+                Action:
+                  - 'ecr:*'
+                Resource:
+                  - Fn::Sub:
+                      - 'arn:aws:ecr:${AWS::Region}:${AWS::AccountId}:repository/${repo}'
+                      - repo: !Ref ECR
+              - Effect: Allow
+                Action:
+                  - ecr:GetAuthorizationToken
+                Resource: '*'
+
+  ECSTaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${ResourcePrefix}-ecs-task-execution
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub arn:aws:iam::${AWS::AccountId}:policy/CTSIAMBlacklistPolicy
+      Policies:
+        - PolicyName: ecs-task
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource:
+                  - !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/ecs/${ECSCluster}"
+                  - !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/ecs/${ECSCluster}:log-stream:*"
+              - Effect: Allow
+                Action:
+                  - 'ecr:*'
+                Resource:
+                  - !Sub "arn:aws:ecr:${AWS::Region}:${AWS::AccountId}:repository/${ECR}"
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource:
+                  - !Sub "arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${SecretsManagerHadoopOauthPath}-*"
+              - Effect: Allow
+                Action:
+                  - ecr:GetAuthorizationToken
+                Resource: '*'
+
+  CodeBuildSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub ${AWS::StackName}-codebuild
+      GroupDescription: !Sub Security group for CodeBuild project ${AWS::StackName}
+      VpcId: !Ref VpcId
+
+  HadoopOauthSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Description: Oauth data to connect to hadoop-ecosystem service
+      Name: !Ref SecretsManagerHadoopOauthPath
+      SecretString: '{"token": "update this token in console"}'
+
+  BuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Artifacts:
+        Type: NO_ARTIFACTS
+      BadgeEnabled: false
+      Description: Kepler build project
+      Environment:
+        ComputeType: BUILD_GENERAL1_SMALL
+        EnvironmentVariables:
+          - Name: GITHUB_REPO_BRANCH
+            Value: !Ref GithubBranch
+          - Name: AWS_ACCOUNT_ID
+            Value: !Sub ${AWS::AccountId}
+          - Name: IMAGE_REPO_NAME
+            Value: !Sub ${ResourcePrefix}-app
+          - Name: IMAGE_TAG
+            Value: latest
+        Image: aws/codebuild/standard:4.0
+        PrivilegedMode: True
+        Type: LINUX_CONTAINER
+      Name: !Sub ${ResourcePrefix}-build
+      QueuedTimeoutInMinutes: 5
+      ServiceRole: !Ref CodeBuildServiceRole
+      Source:
+        Type: GITHUB_ENTERPRISE
+        Location: !Ref GithubRepo
+        BuildSpec: infrastructure/cloudformation/buildspec.yml
+        GitCloneDepth: 100
+      SourceVersion: !Ref GithubBranch
+      TimeoutInMinutes: 20
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref CodeBuildSecurityGroup
+        Subnets: !Ref VpcSubnets
+        VpcId: !Ref VpcId
+
+  ECSTaskSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub ${AWS::StackName}-ecs-task
+      GroupDescription: !Sub Security group for ECS task project ${AWS::StackName}
+      VpcId: !Ref VpcId
+
+  MDITask:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      ContainerDefinitions:
+        - Environment:
+            - Name: "oauth.url"
+              Value: "https://api.devcernercare.com/oauth/access"
+            - Name: "oauth.key"
+              Value: "1acd5414-481b-4266-b595-7d02c0c1e7d4"
+            - Name: "hadoop.ecosystem.url"
+              Value: "https://api.us.devhealtheintent.net/hadoop-ecosystem/v1"
+            - Name: "hadoop.cluster.id"
+              Value: "metroid"
+            - Name: "table.name"
+              Value: "deveng_refrecord_person_4_9_1-CDH5"
+            - Name: "table.column.family"
+              Value: "content"
+            - Name: "zookeeper.connect"
+              Value: "pophdevstormzoo01.northamerica.cerner.net:2181,pophdevstormzoo02.northamerica.cerner.net:2181,pophdevstormzoo03.northamerica.cerner.net:2181/kafka/metroid_cdh5"
+            - Name: "bootstrap.servers"
+              Value: "pophdevvm291.northamerica.cerner.net:6667,pophdevvm292.northamerica.cerner.net:6667,pophdevvm293.northamerica.cerner.net:6667"
+          Image: !Sub "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${ResourcePrefix}-app:latest"
+          Interactive: False
+          LogConfiguration:
+            LogDriver: "awslogs"
+            options:
+              awslogs-group: !Sub "/aws/ecs/${ECSCluster}"
+              awslogs-region: !Sub "${AWS::Region}"
+              awslogs-stream-prefix: "application"
+              awslogs-create-group: true
+          Memory: 512
+          Name: app
+          Privileged: false
+          Secrets:
+            - Name: "oauth.secret"
+              ValueFrom: !Sub "arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${SecretsManagerHadoopOauthPath}:token::"
+          StartTimeout: 30
+          StopTimeout: 15
+          User: app
+          WorkingDirectory: /app
+      Cpu: "256"
+      ExecutionRoleArn: !GetAtt ECSTaskExecutionRole.Arn
+      Family: !Sub "${AWS::StackName}-snapshot"
+      Memory: "512"
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+
+  MDIservice:
+    Type: AWS::ECS::Service
+    Properties:
+      LaunchType: FARGATE
+      Cluster: !Ref ECSCluster
+      DesiredCount: 1
+      TaskDefinition: !Ref MDITask
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: DISABLED
+          SecurityGroups:
+            - "sg-07c4cfad1741d0c83"
+          Subnets: !Ref VpcSubnets
+
+  ECR:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: !Sub ${ResourcePrefix}-app
+
+  ECSCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Sub "${ResourcePrefix}-cluster"
+
+  MdiKeyAlias:
+    Type: AWS::KMS::Alias
+    Properties: 
+      AliasName: !Sub alias/hec-epam-deadpool-mdi-keyalias
+      TargetKeyId: !Ref MdiSQSKey
+
+  MDIqueue:
+    Type: AWS::SQS::Queue
+    Properties: 
+      QueueName: !Sub ${AWS::StackName}-deadpool-mdi-sqs.fifo # set this via variable; hec-epam-dev-mdi-sqs
+      ContentBasedDeduplication: false
+      DelaySeconds: 0
+      FifoQueue: true
+      KmsMasterKeyId: !Ref MdiKeyAlias
+      MaximumMessageSize: 262144
+      MessageRetentionPeriod: 14400
+      ReceiveMessageWaitTimeSeconds: 0
+      VisibilityTimeout: 1800
+      Tags:
+        - Key: "Name"
+          Value: "hec-epam-dev-mdi-sqs"
+        - Key: "Product"
+          Value: "HealtheCare"
+        - Key: DevelopmentTeam
+          Value: EpamDevelopmentTeam
+        - Key: OperationsTeam
+          Value: EpamOperationsTeam
+        - Key: Environment
+          Value: Development
+        - Key: Tier
+          Value: Service
+        - Key: EPAMDevelopmentTeam
+          Value: Deadpool
+
+Outputs:
+  ECSCluster:
+    Value: !Ref ECSCluster
+
+  MdiDefinitionName:
+    Value: !Sub "${AWS::StackName}-snapshot"
+
+  VpcSubnets:
+    Value: !Join [ ",", !Ref VpcSubnets ]
+
+  VpcId:
+    Value: !Ref VpcId
+
+  ECSTaskSecurityGroup:
+    Value: !Sub "${ECSTaskSecurityGroup.GroupId}"
+
+  CodeBuildProject:
+    Value: !Ref BuildProject
+
+  CodeBuildSecurityGroup:
+    Value: !Sub "${CodeBuildSecurityGroup.GroupId}"
+
+  GithubBranch:
+    Value: !Ref GithubBranch
+
+  HadoopOauthSecretPath:
+    Value: !Ref SecretsManagerHadoopOauthPath

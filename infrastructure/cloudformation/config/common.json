@@ -1,0 +1,18 @@
+[
+  {
+    "ParameterKey": "ResourcePrefix",
+    "ParameterValue": "hec-epam-prototype-deadpool"
+  },
+  {
+    "ParameterKey": "VpcId",
+    "ParameterValue": "vpc-907bb1f6"
+  },
+  {
+    "ParameterKey": "VpcSubnets",
+    "ParameterValue": "subnet-f62d93ad,subnet-0f0897b691411010c"
+  },
+  {
+    "ParameterKey": "MdiSQSKey",
+    "ParameterValue": "792d89d8-1a41-4248-bdcd-035e146836c0"
+  }
+]
